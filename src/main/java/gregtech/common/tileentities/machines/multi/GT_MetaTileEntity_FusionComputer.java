@@ -2,7 +2,6 @@ package gregtech.common.tileentities.machines.multi;
 
 import gregtech.GT_Mod;
 import gregtech.api.enums.Dyes;
-import gregtech.api.enums.GT_Values;
 import gregtech.api.enums.Textures;
 import gregtech.api.gui.GT_Container_MultiMachine;
 import gregtech.api.interfaces.IIconContainer;
@@ -26,6 +25,8 @@ import net.minecraftforge.common.util.ForgeDirection;
 import net.minecraftforge.fluids.FluidStack;
 
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
 
 public abstract class GT_MetaTileEntity_FusionComputer extends GT_MetaTileEntity_MultiBlockBase {
 
@@ -106,19 +107,16 @@ public abstract class GT_MetaTileEntity_FusionComputer extends GT_MetaTileEntity
                 && (addIfInjector(xCenter - 6, yCenter - 1, zCenter + 1, aBaseMetaTileEntity)) && (addIfInjector(xCenter + 6, yCenter - 1, zCenter + 1, aBaseMetaTileEntity))
                 && (addIfInjector(xCenter - 6, yCenter - 1, zCenter - 1, aBaseMetaTileEntity)) && (addIfInjector(xCenter + 6, yCenter - 1, zCenter - 1, aBaseMetaTileEntity))
                 && (this.mEnergyHatches.size() >= 1) && (this.mOutputHatches.size() >= 1) && (this.mInputHatches.size() >= 2)) {
-            int mEnergyHatches_sS = this.mEnergyHatches.size();
-            for (int i = 0; i < mEnergyHatches_sS; i++) {
-                if (this.mEnergyHatches.get(i).mTier < tier())
+            for (GT_MetaTileEntity_Hatch_Energy mEnergyHatch : this.mEnergyHatches) {
+                if (mEnergyHatch.mTier < tier())
                     return false;
             }
-            int mOutputHatches_sS = this.mOutputHatches.size();
-            for (int i = 0; i < mOutputHatches_sS; i++) {
-                if (this.mOutputHatches.get(i).mTier < tier())
+            for (GT_MetaTileEntity_Hatch_Output mOutputHatch : this.mOutputHatches) {
+                if (mOutputHatch.mTier < tier())
                     return false;
             }
-            int mInputHatches_sS = this.mInputHatches.size();
-            for (int i = 0; i < mInputHatches_sS; i++) {
-                if (this.mInputHatches.get(i).mTier < tier())
+            for (GT_MetaTileEntity_Hatch_Input mInputHatch : this.mInputHatches) {
+                if (mInputHatch.mTier < tier())
                     return false;
             }
             mWrench = true;
@@ -236,42 +234,119 @@ public abstract class GT_MetaTileEntity_FusionComputer extends GT_MetaTileEntity
         return mStartEnergy < 160000000 ? 4 : mStartEnergy < 320000000 ? 2 : 1;
     }
 
-    @Override
-    public boolean checkRecipe(ItemStack aStack) {
-        ArrayList<FluidStack> tFluidList = getStoredFluids();
-        int tFluidList_sS=tFluidList.size();
-        for (int i = 0; i < tFluidList_sS - 1; i++) {
-            for (int j = i + 1; j < tFluidList_sS; j++) {
-                if (GT_Utility.areFluidsEqual((FluidStack) tFluidList.get(i), (FluidStack) tFluidList.get(j))) {
-                    if (((FluidStack) tFluidList.get(i)).amount >= ((FluidStack) tFluidList.get(j)).amount) {
-                        tFluidList.remove(j--); tFluidList_sS=tFluidList.size();
-                    } else {
-                        tFluidList.remove(i--); tFluidList_sS=tFluidList.size();
-                        break;
+    private void findNextRecipe() {
+        ArrayList<FluidStack> uniqueFluidList = getUniqueFluidList();
+        FluidStack[] aFluids = uniqueFluidList.toArray(new FluidStack[0]);
+        if (mLastRecipe.isRecipeInputEqual(true, aFluids)) {
+            this.mEUt = (this.mLastRecipe.mEUt * overclock(this.mLastRecipe.mSpecialValue));
+            this.mMaxProgresstime = this.mLastRecipe.mDuration / overclock(this.mLastRecipe.mSpecialValue);
+            this.mEfficiencyIncrease = 10000;
+            this.mOutputFluids = this.mLastRecipe.mFluidOutputs;
+        } else {
+            //重置. 已经没有原配方的液体了
+            if (!useAvailableRecipe(false)) {
+                //没有找到新配方. 终止
+                stopMachine();
+            }
+        }
+    }
+
+    private boolean useAvailableRecipe(boolean isSimulate) {
+        ArrayList<FluidStack> uniqueFluidList = getUniqueFluidList();
+        if (uniqueFluidList.size() < 2) {
+            //不足两种无法进行反应
+            return false;
+        }
+        FluidStack[] aFluids = uniqueFluidList.toArray(new FluidStack[0]);
+        GT_Recipe tRecipe;
+        //选出所有可能的配方
+        ArrayList<GT_Recipe> possibleRecipes = new ArrayList<>();
+        for (FluidStack fluid : aFluids) {
+            Collection<GT_Recipe> gt_recipes = GT_Recipe.GT_Recipe_Map.sFusionRecipes.mRecipeFluidMap.get(fluid.getFluid());
+            if (gt_recipes != null) {
+                for (GT_Recipe gt_recipe : gt_recipes) {
+                    if (possibleRecipes.contains(gt_recipe)) continue;
+                    if (gt_recipe.isRecipeInputEqual(false, aFluids)) {
+                        possibleRecipes.add(gt_recipe);
                     }
                 }
             }
         }
-        if (tFluidList.size() > 1) {
-            FluidStack[] tFluids = tFluidList.toArray(new FluidStack[tFluidList.size()]);
-            GT_Recipe tRecipe = GT_Recipe.GT_Recipe_Map.sFusionRecipes.findRecipe(this.getBaseMetaTileEntity(), this.mLastRecipe, false, GT_Values.V[8], tFluids, new ItemStack[]{});
-            if ((tRecipe == null && !mRunningOnLoad) || (maxEUStore() < tRecipe.mSpecialValue)) {
-                turnCasingActive(false);
-                this.mLastRecipe = null;
+        if (possibleRecipes.size() == 0) {
+            return false;
+        }
+        Collections.sort(possibleRecipes);
+        tRecipe = possibleRecipes.get(possibleRecipes.size() - 1);
+        //检查是否已经启动反应了
+        //如果已经启动反应就不需要扣除电量了
+        if(mLastRecipe == null) {
+            //选择一个耗电最少的
+            if (tRecipe.mSpecialValue > getBaseMetaTileEntity().getStoredEU()) {
+                //电力不足无法选用这个配方
                 return false;
             }
-            if (mRunningOnLoad || tRecipe.isRecipeInputEqual(true, tFluids, new ItemStack[]{})) {
+        }
+        if (maxEUStore() < tRecipe.mSpecialValue) {
+            //不支持此反应. 能源仓容量不足
+            this.mLastRecipe = null;
+            return false;
+        }
+        //isSimulate -> 如果只是检查是否有配方，不启动第一次反应
+        //针对电量不足时检测配方的修复
+        if (mRunningOnLoad || tRecipe.isRecipeInputEqual(!isSimulate, aFluids)) {
+            if (mLastRecipe == null && isSimulate) {
+                //先扣除模拟启动没有扣除的燃料. 已加载的机器不需要扣除
+                if (!mRunningOnLoad && tRecipe.isRecipeInputEqual(true, aFluids)) {
+                    //扣除反应启动耗电
+                    getBaseMetaTileEntity().decreaseStoredEnergyUnits(tRecipe.mSpecialValue, true);
+                }
+            }
             this.mLastRecipe = tRecipe;
             this.mEUt = (this.mLastRecipe.mEUt * overclock(this.mLastRecipe.mSpecialValue));
             this.mMaxProgresstime = this.mLastRecipe.mDuration / overclock(this.mLastRecipe.mSpecialValue);
             this.mEfficiencyIncrease = 10000;
             this.mOutputFluids = this.mLastRecipe.mFluidOutputs;
             turnCasingActive(true);
+            //mRunningOnLoad 为区块第一次载入后，工作中的机器重新初始化值的标志
             mRunningOnLoad = false;
             return true;
-            }
         }
         return false;
+    }
+
+    public ArrayList<FluidStack> getUniqueFluidList() {
+        //排除不同输入仓的多种相同液体
+        ArrayList<FluidStack> tFluidList = getStoredFluids();
+        int kindOfFluid = tFluidList.size();
+        for (int i = 0; i < kindOfFluid - 1; i++) {
+            for (int j = i + 1; j < kindOfFluid; j++) {
+                if (GT_Utility.areFluidsEqual(tFluidList.get(i), tFluidList.get(j))) {
+                    if (tFluidList.get(i).amount >= tFluidList.get(j).amount) {
+                        tFluidList.remove(j--);
+                        kindOfFluid = tFluidList.size();
+                    } else {
+                        tFluidList.remove(i--);
+                        kindOfFluid = tFluidList.size();
+                        break;
+                    }
+                }
+            }
+        }
+        return tFluidList;
+    }
+
+    @Override
+    public boolean checkRecipe(ItemStack aStack) {
+        //此方法会被在第一次Enable机器调用
+        //此方法会被在背包发生变化调用
+        return useAvailableRecipe(false);
+    }
+
+    @Override
+    public void stopMachine() {
+        super.stopMachine();
+        this.mLastRecipe = null;
+        turnCasingActive(false);
     }
 
     public abstract int tierOverclock();
@@ -316,10 +391,12 @@ public abstract class GT_MetaTileEntity_FusionComputer extends GT_MetaTileEntity
                 mMachine = checkMachine(aBaseMetaTileEntity, mInventory[1]);
             }
             if (mStartUpCheck < 0) {
+                //mMachine = 结构是否齐全
                 if (mMachine) {
                     if (this.mEnergyHatches != null) {
                         for (GT_MetaTileEntity_Hatch_Energy tHatch : mEnergyHatches)
                             if (isValidMetaTileEntity(tHatch)) {
+                                //恒定的电源输入，只跟是否超频有关
                                 if (aBaseMetaTileEntity.getStoredEU() + (2048 * tierOverclock()) < maxEUStore()
                                         && tHatch.getBaseMetaTileEntity().decreaseStoredEnergyUnits(2048 * tierOverclock(), false)) {
                                     aBaseMetaTileEntity.increaseStoredEnergyUnits(2048 * tierOverclock(), true);
@@ -327,56 +404,63 @@ public abstract class GT_MetaTileEntity_FusionComputer extends GT_MetaTileEntity
                             }
                     }
                     if (this.mEUStore <= 0 && mMaxProgresstime > 0) {
-                        stopMachine();
+                        this.stopMachine();
                     }
                     if (getRepairStatus() > 0) {
+                        //处理正在进行的配方
                         if (mMaxProgresstime > 0) {
+                            //扣除当前反应耗电
                             this.getBaseMetaTileEntity().decreaseStoredEnergyUnits(mEUt, true);
                             if (mMaxProgresstime > 0 && ++mProgresstime >= mMaxProgresstime) {
+                                //反应已完成
                                 if (mOutputItems != null)
                                     for (ItemStack tStack : mOutputItems) if (tStack != null) addOutput(tStack);
                                 if (mOutputFluids != null)
                                     for (FluidStack tStack : mOutputFluids) if (tStack != null) addOutput(tStack);
                                 mEfficiency = Math.max(0, Math.min(mEfficiency + mEfficiencyIncrease, getMaxEfficiency(mInventory[1]) - ((getIdealStatus() - getRepairStatus()) * 1000)));
+                                // stopMachine() ->
                                 mOutputItems = null;
                                 mProgresstime = 0;
                                 mMaxProgresstime = 0;
                                 mEfficiencyIncrease = 0;
+                                // stopMachine()
                                 if (mOutputFluids != null && mOutputFluids.length > 0) {
                                     try {
-                                        GT_Mod.instance.achievements.issueAchivementHatchFluid(aBaseMetaTileEntity.getWorld().getPlayerEntityByName(aBaseMetaTileEntity.getOwnerName()), mOutputFluids[0]);
-                                    } catch (Exception e) {
+                                        GT_Mod.achievements.issueAchivementHatchFluid(aBaseMetaTileEntity.getWorld().getPlayerEntityByName(aBaseMetaTileEntity.getOwnerName()), mOutputFluids[0]);
+                                    } catch (Exception ignored) {
                                     }
                                 }
+                                //???
                                 this.mEUStore = (int) aBaseMetaTileEntity.getStoredEU();
-                                if (aBaseMetaTileEntity.isAllowedToWork())
-                                    checkRecipe(mInventory[1]);
+                                // 检查下一个配方
+                                if (aBaseMetaTileEntity.isAllowedToWork()) {
+                                    findNextRecipe();
+                                } else {
+                                    stopMachine();
+                                }
                             }
                         } else {
+                            //空闲时五秒检查一次下一个可用配方
                             if (aTick % 100 == 0 || aBaseMetaTileEntity.hasWorkJustBeenEnabled() || aBaseMetaTileEntity.hasInventoryBeenModified()) {
-                                turnCasingActive(mMaxProgresstime > 0);
                                 if (aBaseMetaTileEntity.isAllowedToWork()) {
                                     this.mEUStore = (int) aBaseMetaTileEntity.getStoredEU();
-                                    if (checkRecipe(mInventory[1])) {
-                                        if (this.mEUStore < this.mLastRecipe.mSpecialValue) {
-                                            mMaxProgresstime = 0;
-                                            turnCasingActive(false);
-                                        }
-                                        aBaseMetaTileEntity.decreaseStoredEnergyUnits(this.mLastRecipe.mSpecialValue, true);
+                                    if (mLastRecipe == null) {
+                                        useAvailableRecipe(true);
                                     }
                                 }
-                                if (mMaxProgresstime <= 0)
+                                if (mMaxProgresstime <= 0) {
                                     mEfficiency = Math.max(0, mEfficiency - 1000);
+                                    if (mLastRecipe != null) {
+                                        mLastRecipe = null;
+                                    }
+                                }
                             }
                         }
                     } else {
-                        this.mLastRecipe = null;
-                        stopMachine();
+                        this.stopMachine();
                     }
                 } else {
-                    turnCasingActive(false);
-                    this.mLastRecipe = null;
-                    stopMachine();
+                    this.stopMachine();
                 }
             }
             aBaseMetaTileEntity.setErrorDisplayID((aBaseMetaTileEntity.getErrorDisplayID() & ~127) | (mWrench ? 0 : 1) | (mScrewdriver ? 0 : 2) | (mSoftHammer ? 0 : 4) | (mHardHammer ? 0 : 8)
@@ -389,14 +473,12 @@ public abstract class GT_MetaTileEntity_FusionComputer extends GT_MetaTileEntity
     public boolean onRunningTick(ItemStack aStack) {
         if (mEUt < 0) {
             if (!drainEnergyInput(((long) -mEUt * 10000) / Math.max(1000, mEfficiency))) {
-                this.mLastRecipe = null;
-                stopMachine();
+                this.stopMachine();
                 return false;
             }
         }
         if (this.mEUStore <= 0) {
-            this.mLastRecipe = null;
-            stopMachine();
+            this.stopMachine();
             return false;
         }
         return true;
@@ -420,6 +502,7 @@ public abstract class GT_MetaTileEntity_FusionComputer extends GT_MetaTileEntity
     public int getDamageToComponent(ItemStack aStack) {
         return 0;
     }
+
     @Override
     public boolean explodesOnComponentBreak(ItemStack aStack) {
         return false;
@@ -433,15 +516,15 @@ public abstract class GT_MetaTileEntity_FusionComputer extends GT_MetaTileEntity
         if (this.mLastRecipe != null) {
             powerRequired = this.mLastRecipe.mEUt;
             if (this.mLastRecipe.getFluidOutput(0) != null) {
-                plasmaOut = (float)this.mLastRecipe.getFluidOutput(0).amount / (float)this.mLastRecipe.mDuration;
+                plasmaOut = (float) this.mLastRecipe.getFluidOutput(0).amount / (float) this.mLastRecipe.mDuration;
             }
         }
 
         return new String[]{
-                "Fusion Reactor MK "+tier,
-                "EU Required: "+powerRequired+"EU/t",
-                "Stored EU: "+mEUStore+" / "+maxEUStore(),
-                "Plasma Output: "+plasmaOut+"L/t"};
+                "Fusion Reactor MK " + tier,
+                "EU Required: " + powerRequired + "EU/t",
+                "Stored EU: " + mEUStore + " / " + maxEUStore(),
+                "Plasma Output: " + plasmaOut + "L/t"};
     }
 
     @Override

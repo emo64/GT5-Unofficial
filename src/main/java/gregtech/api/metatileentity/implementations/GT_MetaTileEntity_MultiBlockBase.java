@@ -284,7 +284,6 @@ public abstract class GT_MetaTileEntity_MultiBlockBase extends MetaTileEntity {
                             }
                         } else {
                             if (aTick % 100 == 0 || aBaseMetaTileEntity.hasWorkJustBeenEnabled() || aBaseMetaTileEntity.hasInventoryBeenModified()) {
-
                                 if (aBaseMetaTileEntity.isAllowedToWork()) {
                                     checkRecipe(mInventory[1]);
                                 }
